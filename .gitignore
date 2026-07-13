@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

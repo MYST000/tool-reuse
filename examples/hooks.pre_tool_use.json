@@ -1,0 +1,10 @@
+{
+  "matcher": "*",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "TOOL_REUSE_DB=/home/liyachen/workspace/tool-reuse/data/exact_cache.sqlite PYTHONPATH=/home/liyachen/workspace/tool-reuse python3 /home/liyachen/workspace/tool-reuse/tool_reuse/hook_query.py",
+      "timeout": 5
+    }
+  ]
+}
