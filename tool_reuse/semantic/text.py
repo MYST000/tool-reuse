@@ -18,7 +18,9 @@ def tokens(text: str) -> list[str]:
     return result
 
 
-def bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
+def bm25_scores(
+    query: str, documents: list[str], k1: float = 1.5, b: float = 0.75
+) -> list[float]:
     if not documents:
         return []
     query_terms = list(dict.fromkeys(tokens(query)))
@@ -40,10 +42,14 @@ def bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.
             if term_frequency == 0:
                 continue
             df = document_frequency[term]
-            inverse_document_frequency = math.log(1 + (document_count - df + 0.5) / (df + 0.5))
-            denominator = term_frequency + k1 * (
-                1 - b + b * length / average_length
-            ) if average_length else term_frequency
+            inverse_document_frequency = math.log(
+                1 + (document_count - df + 0.5) / (df + 0.5)
+            )
+            denominator = (
+                term_frequency + k1 * (1 - b + b * length / average_length)
+                if average_length
+                else term_frequency
+            )
             score += inverse_document_frequency * (
                 term_frequency * (k1 + 1) / denominator
             )

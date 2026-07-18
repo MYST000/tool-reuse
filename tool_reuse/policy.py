@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 VOLATILE_RE = re.compile(
@@ -23,7 +23,9 @@ STATIC_URL_RE = re.compile(
 )
 
 
-def classify_freshness(intent_text: str, fingerprint: dict[str, object]) -> tuple[str, int]:
+def classify_freshness(
+    intent_text: str, fingerprint: dict[str, object]
+) -> tuple[str, int]:
     haystack = " ".join(
         str(v)
         for v in [
@@ -69,5 +71,5 @@ def is_fresh(expires_at: int | None, now_epoch: int | None = None) -> bool:
     if expires_at is None:
         return False
     if now_epoch is None:
-        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        now_epoch = int(datetime.now(UTC).timestamp())
     return expires_at > now_epoch

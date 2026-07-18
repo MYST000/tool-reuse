@@ -40,12 +40,13 @@ incoming tool call
 ```json
 {
   "record_key": "...",
-  "tool_name": "terminal",
+  "tool_name": "web_search",
   "started_at": "2026-07-08T08:08:54+00:00",
   "ended_at": "2026-07-08T08:08:55+00:00",
   "tool_input": {
-    "kind": "TerminalAction",
-    "command": "curl -s https://example.com/docs | head -50"
+    "kind": "SearchAction",
+    "query": "OpenHands SDK documentation",
+    "domains": ["docs.openhands.dev"]
   },
   "tool_response": {
     "kind": "TerminalObservation",
@@ -58,21 +59,22 @@ incoming tool call
 
 `pending/` 中没有 response 的调用不参与导入。
 
-## Exact-v2
+## Exact-v3
 
 入口：`tool_reuse/exact/`。
 
 ### 支持范围
 
-- terminal 中的 curl；
-- `browser_navigate`。
+- 明确白名单中的 Web Search 工具（`web_search`、`browser_search`、`search`）；
+- URL 明确为搜索端点的 terminal curl（仅严格只读调用可重放）；
+- URL 明确为搜索端点的 `browser_navigate`（只能 `match_only`）。
 
 不支持：
 
 - `browser_get_state`：输入没有当前 page/tab identity；
 - file editor：属于状态修改；
 - think/finish：没有可复用的外部结果；
-- 普通 shell 命令：当前 exact-v2 只处理 HTTP/URL 场景。
+- 普通 HTTP、普通页面导航和普通 shell 命令：不进入 Web Search 缓存。
 
 ### Canonical key
 
@@ -144,7 +146,7 @@ search 示例：
 web search query 中文 embedding 模型
 ```
 
-除 `browser_get_content` 的页面正文外，response 只作为候选载荷保存。页面正文候选仍归入 `browser_navigate_url`，因此 URL 查询既能找到导航历史，也能找到实际页面内容。
+除 `browser_get_content` 的页面正文外，response 只作为候选载荷保存。页面正文候选仍归入 `web_search_browser`，因此搜索 URL 查询既能找到导航历史，也能找到实际页面内容。
 
 ### 候选隔离
 
@@ -158,8 +160,8 @@ web search query 中文 embedding 模型
 operation kind 包括：
 
 ```text
-curl_http
-browser_navigate_url
+web_search_curl
+web_search_browser
 web_search
 ```
 

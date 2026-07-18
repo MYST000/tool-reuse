@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .embedder import Embedder
@@ -17,6 +17,7 @@ def match_semantic(
     tool_input: dict[str, Any],
     embedder: Embedder,
     *,
+    cache_scope: str,
     top_k: int = 5,
     candidate_k: int = 50,
     min_score: float = 0.65,
@@ -28,36 +29,49 @@ def match_semantic(
     rerank_top_n: int = 10,
     now_epoch: int | None = None,
 ) -> dict[str, Any]:
+    if not cache_scope.strip():
+        raise ValueError("cache_scope must not be empty")
     call = normalize_semantic_call(tool_name, tool_input)
     if call is None:
         return {
             "supported": False,
             "matched": False,
             "reusable": False,
-            "reason": "tool/action is not supported by semantic-v1",
+            "reason": "tool/action is not supported by semantic-v3",
             "candidates": [],
         }
     if dense_weight < 0 or lexical_weight < 0 or dense_weight + lexical_weight <= 0:
-        raise ValueError("dense and lexical weights must be non-negative with a positive sum")
+        raise ValueError(
+            "dense and lexical weights must be non-negative with a positive sum"
+        )
+    if top_k <= 0 or candidate_k <= 0:
+        raise ValueError("top_k and candidate_k must be positive")
     if now_epoch is None:
-        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        now_epoch = int(datetime.now(UTC).timestamp())
 
     query_embedding = embedder.embed_query(call.semantic_text)
-    store = SemanticStore(db_path)
+    store = SemanticStore(db_path, read_only=True)
     try:
         entries = store.candidates(
+            cache_scope,
             embedder.provider_name,
-            embedder.model_id,
+            embedder.index_id,
             call.operation_kind,
+            call.semantic_version,
             successful_only=True,
+            limit=candidate_k,
         )
     finally:
         store.close()
     if fresh_only:
         entries = [entry for entry in entries if _is_fresh(entry, now_epoch)]
 
-    dense_scores = [cosine_similarity(query_embedding, entry.embedding) for entry in entries]
-    lexical_scores = bm25_scores(call.semantic_text, [entry.call.semantic_text for entry in entries])
+    dense_scores = [
+        cosine_similarity(query_embedding, entry.embedding) for entry in entries
+    ]
+    lexical_scores = bm25_scores(
+        call.semantic_text, [entry.call.semantic_text for entry in entries]
+    )
     total_weight = dense_weight + lexical_weight
     scored = []
     for entry, dense, lexical in zip(entries, dense_scores, lexical_scores):
@@ -107,8 +121,10 @@ def match_semantic(
             else "no semantic candidate reached the score threshold"
         ),
         "semantic_version": call.semantic_version,
+        "cache_scope": cache_scope,
         "embedding_provider": embedder.provider_name,
         "embedding_model": embedder.model_id,
+        "embedding_index_id": embedder.index_id,
         "operation_kind": call.operation_kind,
         "semantic_text": call.semantic_text,
         "weights": {"dense": dense_weight, "lexical": lexical_weight},
@@ -116,8 +132,7 @@ def match_semantic(
         "reranker_model": reranker.model_id if reranker else None,
         "candidate_count": len(entries),
         "candidates": [
-            _candidate_json(item, now_epoch, include_response)
-            for item in accepted
+            _candidate_json(item, now_epoch, include_response) for item in accepted
         ],
     }
 
@@ -142,7 +157,9 @@ def _is_fresh(entry: SemanticEntry, now_epoch: int) -> bool:
     return entry.expires_at_epoch is not None and entry.expires_at_epoch > now_epoch
 
 
-def _candidate_json(item: dict[str, Any], now_epoch: int, include_response: bool) -> dict[str, Any]:
+def _candidate_json(
+    item: dict[str, Any], now_epoch: int, include_response: bool
+) -> dict[str, Any]:
     entry: SemanticEntry = item["entry"]
     result = {
         "record_key": entry.record_key,

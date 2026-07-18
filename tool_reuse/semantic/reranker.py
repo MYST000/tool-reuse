@@ -16,7 +16,8 @@ class CrossEncoderReranker:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:
             raise RuntimeError(
-                "sentence-transformers is not installed; install it before using a CrossEncoder reranker"
+                "sentence-transformers is not installed; install it before using a "
+                "CrossEncoder reranker"
             ) from exc
         self.model_id = model_id
         self._model = CrossEncoder(model_id, device=device)

@@ -14,4 +14,3 @@ class NormalizedToolCall:
     ttl_seconds: int
     cacheable: bool
     reason: str | None = None
-

@@ -8,7 +8,7 @@ python3 --version
 sqlite3 --version
 ```
 
-需要 Python 3.10+。exact-v2 和 hashing/OpenAI-compatible provider 只使用 Python 标准库。
+需要 Python 3.10+。exact-v5 和 hashing/OpenAI-compatible provider 只使用 Python 标准库。
 
 运行测试：
 
@@ -64,7 +64,7 @@ BGE 中文检索可按模型说明设置 query instruction，例如：
 --query-prefix '为这个句子生成表示以用于检索相关文章：'
 ```
 
-建库和查询应保持 provider、model、dimensions、query/document prefix 一致。当前数据库只强制隔离 provider/model，不会自动检测 prefix 配置变化。
+建库和查询应保持 provider、model、dimensions、base URL、query/document prefix 一致；这些配置会参与索引隔离。
 
 ## OpenAI-compatible Provider
 
@@ -98,6 +98,7 @@ export EMBEDDING_API_KEY=your-key
 python3 -m tool_reuse.cli semantic-ingest \
   --records /path/to/tool-records \
   --db semantic_remote.sqlite \
+  --scope local/default-tools/v1 \
   --provider openai-compatible \
   --base-url http://127.0.0.1:8000/v1 \
   --model BAAI/bge-m3 \
@@ -160,7 +161,8 @@ tool_reuse/exact/policy.py
 
 - 数据库权限自动设置为 `0600`；
 - tool input 中常见认证信息会脱敏；
-- exact key 中认证值只保存 SHA-256；
-- response 为实现缓存会完整保存，可能包含私有数据；
+- 认证调用不进入 exact，检测到 credential 的 response 也拒绝持久化；
+- semantic tool input、response、metadata 和 embedding text 在落盘/远程请求前脱敏；
+- exact 与 semantic 都要求 scope 包含用户/租户、provider、工具和配置版本；
 - 不要把 SQLite 文件提交到公共仓库；
 - 多用户环境应为每个用户或认证域使用独立数据库。

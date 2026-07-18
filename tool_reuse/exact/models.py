@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-KEY_VERSION = "exact-v2"
+KEY_VERSION = "exact-v5"
 
 
 @dataclass(frozen=True)

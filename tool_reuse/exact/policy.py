@@ -34,12 +34,70 @@ def freshness_for_url(url: str) -> tuple[str, int]:
     return "web", 6 * 60 * 60
 
 
-def response_status(tool_response: dict[str, Any]) -> tuple[bool, str]:
-    if tool_response.get("is_error") is True:
-        return False, "tool_response.is_error=true"
+def is_web_search_url(url: str) -> bool:
+    """Return whether a URL represents a web search request."""
+    return bool(SEARCH_RE.search(url))
+
+
+KNOWN_OBSERVATION_KINDS = frozenset(
+    {
+        "BrowserObservation",
+        "FileEditorObservation",
+        "FinishObservation",
+        "SearchObservation",
+        "TerminalObservation",
+        "ThinkObservation",
+        "ToolObservation",
+    }
+)
+
+
+def response_status(
+    tool_response: dict[str, Any], tool_name: str | None = None
+) -> tuple[bool, str]:
+    kind = tool_response.get("kind")
+    if kind not in KNOWN_OBSERVATION_KINDS:
+        return False, "missing or unrecognized observation kind"
+    expected_kind = _expected_observation_kind(tool_name)
+    if expected_kind is not None and kind not in expected_kind:
+        return False, f"observation kind {kind!r} does not match tool {tool_name!r}"
+    if tool_response.get("is_error") is not False:
+        return False, "tool_response.is_error is not explicitly false"
     if tool_response.get("timeout") is True:
         return False, "tool_response.timeout=true"
     exit_code = tool_response.get("exit_code")
-    if isinstance(exit_code, int) and exit_code != 0:
-        return False, f"exit_code={exit_code}"
+    if exit_code is not None:
+        if not isinstance(exit_code, int):
+            return False, "tool_response.exit_code is not an integer"
+        if exit_code != 0:
+            return False, f"exit_code={exit_code}"
     return True, "success"
+
+
+def origin_status(
+    record: dict[str, Any], *, trust_legacy: bool = False
+) -> tuple[bool, str]:
+    """Accept real executions and only explicitly trusted legacy traces."""
+    execution_source = record.get("execution_source")
+    if execution_source == "tool":
+        return True, "trusted tool origin"
+    if execution_source is not None:
+        return False, f"execution_source={execution_source!r} is not an origin"
+    required_legacy_fields = ("record_key", "started_at", "ended_at")
+    if trust_legacy and all(
+        isinstance(record.get(field), str) for field in required_legacy_fields
+    ):
+        return True, "trusted legacy tool origin"
+    return False, "missing trusted execution provenance"
+
+
+def _expected_observation_kind(tool_name: str | None) -> frozenset[str] | None:
+    if tool_name is None:
+        return None
+    if tool_name == "terminal":
+        return frozenset({"TerminalObservation"})
+    if tool_name.startswith("browser_"):
+        return frozenset({"BrowserObservation"})
+    if tool_name in {"web_search", "browser_search", "search"}:
+        return frozenset({"SearchObservation", "ToolObservation"})
+    return None

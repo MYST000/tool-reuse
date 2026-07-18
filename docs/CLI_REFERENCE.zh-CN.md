@@ -10,8 +10,10 @@ python3 -m tool_reuse.cli --help
 ## exact-ingest
 
 ```bash
-python3 -m tool_reuse.cli exact-ingest --records PATH --db DB
+python3 -m tool_reuse.cli exact-ingest --records PATH --db DB --scope SCOPE
 ```
+
+`--trust-legacy-origins` 仅用于已经人工确认来源的旧 trace；默认拒绝缺少 `execution_source=tool` 的记录。
 
 返回：
 
@@ -21,8 +23,8 @@ python3 -m tool_reuse.cli exact-ingest --records PATH --db DB
   "imported": 24,
   "unsupported": 23,
   "operation_counts": {
-    "browser_navigate_url": 4,
-    "curl_http": 20
+    "web_search": 4,
+    "web_search_curl": 20
   },
   "status_counts": {
     "failed": 2,
@@ -32,7 +34,8 @@ python3 -m tool_reuse.cli exact-ingest --records PATH --db DB
 ```
 
 - `seen`：读取到的 JSONL 记录数；
-- `imported`：exact-v2 支持并写入的记录数；
+- `imported`：exact-v5 支持并写入的记录数；
+- `scope`：用户/租户、provider、工具版本与响应配置组成的隔离域；
 - `unsupported`：输入不完整或工具类型不支持；
 - 失败 observation 也会导入，但不能复用。
 
@@ -41,8 +44,9 @@ python3 -m tool_reuse.cli exact-ingest --records PATH --db DB
 ```bash
 python3 -m tool_reuse.cli exact-match \
   --db DB \
-  --tool terminal \
-  --input-json '{"kind":"TerminalAction","command":"curl https://example.com"}' \
+  --scope SCOPE \
+  --tool web_search \
+  --input-json '{"kind":"SearchAction","query":"OpenHands tool reuse"}' \
   --limit 20 \
   --full-response
 ```
@@ -82,6 +86,7 @@ python3 -m tool_reuse.cli exact-stats --db DB
 python3 -m tool_reuse.cli semantic-ingest \
   --records PATH \
   --db DB \
+  --scope SCOPE \
   --provider sentence-transformers \
   --model BAAI/bge-small-zh-v1.5 \
   --batch-size 32
@@ -101,15 +106,17 @@ Embedding 参数：
 ```
 
 返回中 `embedding_provider/embedding_model` 标识实际索引。
+semantic 导入同样支持 `--trust-legacy-origins`，约束与 exact 相同。
 
 ## semantic-match
 
 ```bash
 python3 -m tool_reuse.cli semantic-match \
   --db DB \
+  --scope SCOPE \
   --provider sentence-transformers \
   --model BAAI/bge-small-zh-v1.5 \
-  --tool terminal \
+  --tool web_search \
   --input-json JSON \
   --top-k 5 \
   --candidate-k 50 \
@@ -132,7 +139,7 @@ python3 -m tool_reuse.cli semantic-match \
 | 字段 | 含义 |
 |---|---|
 | `matched` | 至少一条候选达到 min score |
-| `reusable` | semantic-v1 固定为 false |
+| `reusable` | semantic-v3 固定为 false |
 | `semantic_text` | 当前输入生成的检索文本 |
 | `candidate_count` | freshness/operation/model 过滤后的候选总数 |
 | `dense_score` | cosine，相同方向越接近 1 |
@@ -147,7 +154,7 @@ python3 -m tool_reuse.cli semantic-match \
 ## semantic-stats
 
 ```bash
-python3 -m tool_reuse.cli semantic-stats --db DB
+python3 -m tool_reuse.cli semantic-stats --db DB --scope SCOPE
 ```
 
-按 provider、model、operation 输出记录数量和成功数量。
+仅统计指定 scope，并按 provider、model、operation 输出记录数量和成功数量。

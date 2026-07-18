@@ -12,6 +12,7 @@ from .models import SemanticCall, SemanticEntry
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS semantic_entries (
+  cache_scope TEXT NOT NULL,
   record_key TEXT NOT NULL,
   embedding_model TEXT NOT NULL,
   embedding_provider TEXT NOT NULL,
@@ -37,23 +38,59 @@ CREATE TABLE IF NOT EXISTS semantic_entries (
   response_text TEXT NOT NULL,
   response_sha256 TEXT NOT NULL,
   imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (record_key, embedding_provider, embedding_model)
+  PRIMARY KEY (cache_scope, record_key, embedding_provider, embedding_model)
 );
 
 CREATE INDEX IF NOT EXISTS idx_semantic_entries_lookup
-ON semantic_entries(embedding_provider, embedding_model, operation_kind, success, expires_at_epoch);
+ON semantic_entries(
+  cache_scope, embedding_provider, embedding_model, operation_kind, success,
+  expires_at_epoch
+);
 """
 
 
 class SemanticStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, read_only: bool = False):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        if read_only:
+            self.conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
-        self.db_path.chmod(0o600)
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        if not read_only:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            self._drop_unscoped_legacy_index()
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
+            self.db_path.chmod(0o600)
+        else:
+            try:
+                self._require_scoped_schema()
+            except ValueError:
+                self.conn.close()
+                raise
+
+    def _drop_unscoped_legacy_index(self) -> None:
+        columns = self._table_columns()
+        if columns and "cache_scope" not in columns:
+            self.conn.execute("DROP TABLE semantic_entries")
+            self.conn.commit()
+            self.conn.execute("VACUUM")
+
+    def _require_scoped_schema(self) -> None:
+        columns = self._table_columns()
+        if columns and "cache_scope" not in columns:
+            raise ValueError(
+                "semantic-v2 database has no cache scope; rebuild it with semantic-v3"
+            )
+
+    def _table_columns(self) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(semantic_entries)")
+        }
 
     def close(self) -> None:
         self.conn.close()
@@ -61,19 +98,40 @@ class SemanticStore:
     def commit(self) -> None:
         self.conn.commit()
 
+    def delete_source_index(
+        self,
+        source_path: str,
+        cache_scope: str,
+        embedding_provider: str,
+        embedding_model: str,
+    ) -> None:
+        """Remove one source/config slice before rebuilding it."""
+        self.conn.execute(
+            """
+            DELETE FROM semantic_entries
+            WHERE source_path = ? AND cache_scope = ?
+              AND embedding_provider = ? AND embedding_model = ?
+            """,
+            (source_path, cache_scope, embedding_provider, embedding_model),
+        )
+
     def upsert(self, entry: SemanticEntry) -> None:
         call = entry.call
         self.conn.execute(
             """
             INSERT INTO semantic_entries (
-              record_key, embedding_model, embedding_provider, embedding_dim,
+              cache_scope, record_key, embedding_model, embedding_provider,
+              embedding_dim,
               embedding_blob, source_path, semantic_version, tool_name,
               action_kind, operation_kind, semantic_text, metadata_json,
               freshness_class, ttl_seconds, started_at, ended_at,
               observed_at_epoch, expires_at_epoch, success, status_reason,
               tool_input_json, tool_response_json, response_text, response_sha256
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(record_key, embedding_provider, embedding_model) DO UPDATE SET
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(cache_scope, record_key, embedding_provider, embedding_model)
+            DO UPDATE SET
               embedding_dim=excluded.embedding_dim,
               embedding_blob=excluded.embedding_blob,
               source_path=excluded.source_path,
@@ -98,6 +156,7 @@ class SemanticStore:
               imported_at=CURRENT_TIMESTAMP
             """,
             (
+                entry.cache_scope,
                 entry.record_key,
                 entry.embedding_model,
                 entry.embedding_provider,
@@ -127,35 +186,57 @@ class SemanticStore:
 
     def candidates(
         self,
+        cache_scope: str,
         embedding_provider: str,
         embedding_model: str,
         operation_kind: str,
+        semantic_version: str,
         *,
         successful_only: bool = True,
+        limit: int = 50,
     ) -> list[SemanticEntry]:
+        if limit <= 0:
+            return []
         sql = """
             SELECT * FROM semantic_entries
-            WHERE embedding_provider = ? AND embedding_model = ? AND operation_kind = ?
+            WHERE cache_scope = ? AND embedding_provider = ? AND embedding_model = ?
+              AND operation_kind = ? AND semantic_version = ?
         """
-        parameters: list[Any] = [embedding_provider, embedding_model, operation_kind]
+        parameters: list[Any] = [
+            cache_scope,
+            embedding_provider,
+            embedding_model,
+            operation_kind,
+            semantic_version,
+        ]
         if successful_only:
             sql += " AND success = 1"
-        sql += " ORDER BY ended_at DESC"
+        sql += " ORDER BY ended_at DESC LIMIT ?"
+        parameters.append(limit)
         rows = self.conn.execute(sql, parameters).fetchall()
         return [_row_to_entry(row) for row in rows]
 
-    def stats(self) -> dict[str, Any]:
-        total = int(self.conn.execute("SELECT COUNT(*) FROM semantic_entries").fetchone()[0])
+    def stats(self, cache_scope: str) -> dict[str, Any]:
+        total = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM semantic_entries WHERE cache_scope = ?",
+                (cache_scope,),
+            ).fetchone()[0]
+        )
         rows = self.conn.execute(
             """
-            SELECT embedding_provider, embedding_model, operation_kind, COUNT(*) AS count,
+            SELECT embedding_provider, embedding_model, operation_kind,
+                   COUNT(*) AS count,
                    SUM(success) AS success_count
             FROM semantic_entries
+            WHERE cache_scope = ?
             GROUP BY embedding_provider, embedding_model, operation_kind
             ORDER BY embedding_provider, embedding_model, operation_kind
-            """
+            """,
+            (cache_scope,),
         ).fetchall()
         return {
+            "cache_scope": cache_scope,
             "total": total,
             "indexes": [
                 {
@@ -194,6 +275,7 @@ def _row_to_entry(row: sqlite3.Row) -> SemanticEntry:
         ttl_seconds=int(row["ttl_seconds"]),
     )
     return SemanticEntry(
+        cache_scope=row["cache_scope"],
         record_key=row["record_key"],
         source_path=row["source_path"],
         call=call,

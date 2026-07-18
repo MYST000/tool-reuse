@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tool_reuse.exact.matcher import match_exact  # noqa: E402
@@ -21,13 +22,16 @@ def deny_with_cache(result: dict) -> int:
     record = result.get("selected", {})
     context = {
         "tool_reuse": {
-            "hit_type": "exact-v2",
+            "hit_type": "exact-v5",
             "exact_key": result.get("exact_key"),
             "record_key": record.get("record_key"),
             "ended_at": record.get("ended_at"),
             "freshness_class": record.get("freshness_class"),
             "ttl_seconds": record.get("ttl_seconds"),
-            "note": "The tool call was not executed because exact-v2 found a fresh, successful, replayable response.",
+            "note": (
+                "The tool call was not executed because exact-v5 found a fresh, "
+                "successful, replayable response."
+            ),
         },
         "cached_tool_response": response,
     }
@@ -37,6 +41,12 @@ def deny_with_cache(result: dict) -> int:
                 "decision": "deny",
                 "reason": "tool reuse cache exact hit",
                 "additionalContext": json.dumps(context, ensure_ascii=False),
+                "toolResponse": response,
+                "toolResponseMetadata": {
+                    "cacheHitType": "exact",
+                    "cacheRecordKey": record.get("record_key"),
+                    "cacheObservedAt": record.get("ended_at"),
+                },
             },
             ensure_ascii=False,
         )
@@ -46,7 +56,8 @@ def deny_with_cache(result: dict) -> int:
 
 def main() -> int:
     db_path = os.environ.get("TOOL_REUSE_DB")
-    if not db_path:
+    cache_scope = os.environ.get("TOOL_REUSE_SCOPE")
+    if not db_path or not cache_scope:
         return allow()
     try:
         event = json.load(sys.stdin)
@@ -59,6 +70,7 @@ def main() -> int:
             tool_name,
             tool_input,
             include_response=True,
+            cache_scope=cache_scope,
         )
         if result.get("reusable") is True:
             return deny_with_cache(result)

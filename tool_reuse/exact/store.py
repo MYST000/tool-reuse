@@ -47,20 +47,32 @@ ON exact_entries(operation_kind, success, replayable, expires_at_epoch);
 
 
 class ExactStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, read_only: bool = False):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        if read_only:
+            self.conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
-        self.db_path.chmod(0o600)
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        if not read_only:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
+            self.db_path.chmod(0o600)
 
     def close(self) -> None:
         self.conn.close()
 
     def commit(self) -> None:
         self.conn.commit()
+
+    def delete_source(self, source_path: str) -> None:
+        """Remove entries from a source before rebuilding that source's index."""
+        self.conn.execute(
+            "DELETE FROM exact_entries WHERE source_path = ?", (source_path,)
+        )
 
     def upsert(self, entry: ExactEntry) -> None:
         call = entry.exact_call
@@ -73,7 +85,9 @@ class ExactStore:
               ended_at, observed_at_epoch, expires_at_epoch, success,
               status_reason, tool_input_json, tool_response_json, response_text,
               response_sha256, source_record_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(record_key) DO UPDATE SET
               source_path=excluded.source_path,
               key_version=excluded.key_version,
@@ -141,7 +155,9 @@ class ExactStore:
         return [_row_to_entry(row) for row in rows]
 
     def stats(self) -> dict[str, Any]:
-        total = int(self.conn.execute("SELECT COUNT(*) FROM exact_entries").fetchone()[0])
+        total = int(
+            self.conn.execute("SELECT COUNT(*) FROM exact_entries").fetchone()[0]
+        )
         rows = self.conn.execute(
             """
             SELECT operation_kind, COUNT(*) AS count,

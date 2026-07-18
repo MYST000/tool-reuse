@@ -1,4 +1,6 @@
 __pycache__/
+.venv/
+*.egg-info/
 *.py[cod]
 *.sqlite-shm
 *.sqlite-wal

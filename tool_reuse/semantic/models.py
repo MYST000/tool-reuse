@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SEMANTIC_VERSION = "semantic-v1"
+SEMANTIC_VERSION = "semantic-v3"
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class SemanticCall:
 
 @dataclass(frozen=True)
 class SemanticEntry:
+    cache_scope: str
     record_key: str
     source_path: str
     call: SemanticCall

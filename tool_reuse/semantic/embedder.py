@@ -13,6 +13,7 @@ from .text import normalize_vector, tokens
 class Embedder(Protocol):
     provider_name: str
     model_id: str
+    index_id: str
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
@@ -25,16 +26,28 @@ class HashingEmbedder:
 
     dimensions: int = 384
     provider_name: str = "hashing"
+    query_prefix: str = ""
+    document_prefix: str = ""
 
     @property
     def model_id(self) -> str:
         return f"hashing-v1-{self.dimensions}"
 
+    @property
+    def index_id(self) -> str:
+        return _embedding_index_id(
+            self.model_id,
+            {
+                "query_prefix": self.query_prefix,
+                "document_prefix": self.document_prefix,
+            },
+        )
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed(text) for text in texts]
+        return [self._embed(self.document_prefix + text) for text in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed(text)
+        return self._embed(self.query_prefix + text)
 
     def _embed(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
@@ -64,11 +77,19 @@ class SentenceTransformerEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise RuntimeError(
-                "sentence-transformers is not installed; install it before using this provider"
+                "sentence-transformers is not installed; install it before using "
+                "this provider"
             ) from exc
         self.model_id = model_id
         self.query_prefix = query_prefix
         self.document_prefix = document_prefix
+        self.index_id = _embedding_index_id(
+            model_id,
+            {
+                "query_prefix": query_prefix,
+                "document_prefix": document_prefix,
+            },
+        )
         self._model = SentenceTransformer(model_id, device=device)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -98,19 +119,32 @@ class OpenAICompatibleEmbedder:
         base_url: str,
         api_key: str | None = None,
         dimensions: int | None = None,
+        query_prefix: str = "",
+        document_prefix: str = "",
         timeout: float = 60.0,
     ):
         self.model_id = model_id
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.dimensions = dimensions
+        self.query_prefix = query_prefix
+        self.document_prefix = document_prefix
         self.timeout = timeout
+        self.index_id = _embedding_index_id(
+            model_id,
+            {
+                "base_url": self.base_url,
+                "dimensions": dimensions,
+                "query_prefix": query_prefix,
+                "document_prefix": document_prefix,
+            },
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self._request(texts)
+        return self._request([self.document_prefix + text for text in texts])
 
     def embed_query(self, text: str) -> list[float]:
-        return self._request([text])[0]
+        return self._request([self.query_prefix + text])[0]
 
     def _request(self, texts: list[str]) -> list[list[float]]:
         payload: dict[str, object] = {"model": self.model_id, "input": texts}
@@ -143,7 +177,11 @@ def create_embedder(
     device: str | None = None,
 ) -> Embedder:
     if provider == "hashing":
-        return HashingEmbedder(dimensions=dimensions or 384)
+        return HashingEmbedder(
+            dimensions=dimensions or 384,
+            query_prefix=query_prefix,
+            document_prefix=document_prefix,
+        )
     if provider == "sentence-transformers":
         return SentenceTransformerEmbedder(
             model or "BAAI/bge-small-zh-v1.5",
@@ -159,5 +197,13 @@ def create_embedder(
             base_url=base_url,
             api_key=os.environ.get(api_key_env),
             dimensions=dimensions,
+            query_prefix=query_prefix,
+            document_prefix=document_prefix,
         )
     raise ValueError(f"Unknown embedding provider: {provider}")
+
+
+def _embedding_index_id(model_id: str, config: dict[str, object]) -> str:
+    encoded = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+    return f"{model_id}#config-{digest}"

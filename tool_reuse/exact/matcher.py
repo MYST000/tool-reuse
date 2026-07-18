@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .models import ExactEntry
@@ -16,19 +16,20 @@ def match_exact(
     now_epoch: int | None = None,
     include_response: bool = True,
     limit: int = 20,
+    cache_scope: str = "local",
 ) -> dict[str, Any]:
-    call = normalize_exact_call(tool_name, tool_input)
+    call = normalize_exact_call(tool_name, tool_input, cache_scope=cache_scope)
     if call is None:
         return {
             "supported": False,
             "matched": False,
             "reusable": False,
-            "reason": "tool/action is not supported by exact-v2",
+            "reason": "tool/action is not supported by exact-v5",
         }
     if now_epoch is None:
-        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        now_epoch = int(datetime.now(UTC).timestamp())
 
-    store = ExactStore(db_path)
+    store = ExactStore(db_path, read_only=True)
     try:
         entries = store.find(call.exact_key, limit=limit)
     finally:
@@ -37,6 +38,7 @@ def match_exact(
     selected = _select_entry(entries, now_epoch)
     reusable = bool(
         selected
+        and call.replayable
         and selected.success
         and selected.exact_call.replayable
         and _is_fresh(selected, now_epoch)
@@ -46,7 +48,10 @@ def match_exact(
     elif reusable:
         reason = "fresh successful replayable exact match"
     elif selected and not selected.success:
-        reason = f"exact history exists but selected observation failed: {selected.status_reason}"
+        reason = (
+            "exact history exists but selected observation failed: "
+            f"{selected.status_reason}"
+        )
     elif selected and not selected.exact_call.replayable:
         reason = selected.exact_call.reason
     else:
@@ -68,7 +73,9 @@ def match_exact(
             "replay_policy": call.replay_policy,
         },
         "match_count": len(entries),
-        "selected": _entry_json(selected, now_epoch, include_response) if selected else None,
+        "selected": _entry_json(selected, now_epoch, include_response)
+        if selected
+        else None,
         "matches": [_entry_json(entry, now_epoch, False) for entry in entries],
     }
     if reusable and include_response and selected:
@@ -80,7 +87,11 @@ def _select_entry(entries: list[ExactEntry], now_epoch: int) -> ExactEntry | Non
     if not entries:
         return None
     for entry in entries:
-        if entry.success and entry.exact_call.replayable and _is_fresh(entry, now_epoch):
+        if (
+            entry.success
+            and entry.exact_call.replayable
+            and _is_fresh(entry, now_epoch)
+        ):
             return entry
     for entry in entries:
         if entry.success:
@@ -92,7 +103,9 @@ def _is_fresh(entry: ExactEntry, now_epoch: int) -> bool:
     return entry.expires_at_epoch is not None and entry.expires_at_epoch > now_epoch
 
 
-def _entry_json(entry: ExactEntry, now_epoch: int, include_response: bool) -> dict[str, Any]:
+def _entry_json(
+    entry: ExactEntry, now_epoch: int, include_response: bool
+) -> dict[str, Any]:
     result = {
         "record_key": entry.record_key,
         "source_path": entry.source_path,

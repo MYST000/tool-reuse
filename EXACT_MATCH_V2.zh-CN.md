@@ -1,4 +1,4 @@
-# OpenHands 工具精确匹配 exact-v2
+# OpenHands Web Search 精确匹配 exact-v5
 
 ## 输入数据
 
@@ -16,9 +16,9 @@
 - `browser_get_content` 6 条，`browser_get_state` 3 条；
 - think 及其他状态依赖 browser 操作 4 条。
 
-exact-v2 实际导入 18 条：12 条 browser navigate 和 6 条 curl；其中 4 条 curl 可安全重放，2 条因 shell 输出副作用仅用于匹配。
+当前实现只导入明确的 Web Search 工具和搜索 URL；普通 curl、普通 browser 导航和普通页面内容不进入 exact 索引。
 
-exact-v2 只导入可建立稳定输入键的 curl 和 `browser_navigate`，其他状态依赖或写操作不进入精确缓存。
+搜索型 `browser_navigate` 仍然只能 `match_only`，因为其 observation 不包含页面结果且会改变 tab 状态。只有严格只读的搜索响应才允许自动复用。
 
 ## 匹配与复用是两个概念
 
@@ -36,13 +36,14 @@ curl 的 canonical payload 包含：
 
 ```json
 {
-  "key_version": "exact-v2",
+  "key_version": "exact-v5",
+  "cache_scope": "local/default-tools/v1",
   "tool_name": "terminal",
   "action_kind": "TerminalAction",
-  "operation_kind": "curl_http",
+  "operation_kind": "web_search_curl",
   "request": {
     "method": "GET",
-    "url": "https://example.com/api?a=1&b=2",
+    "url": "https://example.com/search?a=1&b=2",
     "headers": [],
     "secret_headers": [],
     "body_hash": null,
@@ -60,18 +61,18 @@ curl 的 canonical payload 包含：
 
 - URL scheme/host 小写；
 - 移除默认端口和 fragment；
-- query 参数排序并保留重复参数；
-- `-s`、`--max-time`、`--retry` 等运行控制参数不进入 exact key；
+- query 参数和重复参数保留原始顺序；
+- `-s/-S` 可忽略；timeout、retry 等会改变终端 observation 的参数拒绝 exact；
 - method、headers、body、认证 scope、`-L/-i/--compressed` 进入 exact key；
 - pipe 后的 `grep/head` 等输出变换进入 exact key；
-- `Authorization`、cookie、API key 只以 hash 参与匹配；
+- `Authorization`、cookie、API key、URL userinfo 和敏感 query 会使 exact 调用不受支持；
 - 入库的原始命令会脱敏。
 
-以下命令可以精确匹配：
+以下搜索命令可以精确匹配：
 
 ```bash
-curl -s --max-time 15 'https://example.com/api?b=2&a=1' | head -20
-curl 'https://example.com/api?a=1&b=2' --max-time 99 -sS | head -20
+curl -s --max-time 15 'https://example.com/search?b=2&a=1' | head -20
+curl 'https://example.com/search?a=1&b=2' --max-time 99 -sS | head -20
 ```
 
 以下命令不能直接重放：
@@ -91,7 +92,7 @@ curl URL -D headers.txt
 - canonical URL；
 - `new_tab`；
 - action kind；
-- URL userinfo 的认证 scope hash。
+- cache scope。
 
 当前 trace 的 BrowserObservation 只包含 `Navigated to: URL`，没有网页正文，而且 navigate 会改变 tab 状态。因此 browser URL 可以精确匹配历史，但固定返回 `reusable=false`。
 
@@ -125,7 +126,8 @@ curl URL -D headers.txt
 cd /home/liyachen/workspace/tool-reuse
 python3 -m tool_reuse.cli exact-ingest \
   --records /home/liyachen/workspace/experiments/traces/deep_search_2026_7_12_15_29/tool-records \
-  --db /home/liyachen/workspace/tool-reuse/data/exact_cache.sqlite
+  --db /home/liyachen/workspace/tool-reuse/data/exact_cache.sqlite \
+  --scope local/default-tools/v1
 ```
 
 匹配：
@@ -133,8 +135,9 @@ python3 -m tool_reuse.cli exact-ingest \
 ```bash
 python3 -m tool_reuse.cli exact-match \
   --db /home/liyachen/workspace/tool-reuse/data/exact_cache.sqlite \
-  --tool terminal \
-  --input-json '{"kind":"TerminalAction","command":"curl -s https://example.com/api | head -20"}'
+  --scope local/default-tools/v1 \
+  --tool web_search \
+  --input-json '{"kind":"SearchAction","query":"OpenHands tool reuse"}'
 ```
 
 查看完整缓存响应时增加 `--full-response`。
@@ -148,4 +151,4 @@ python3 -m tool_reuse.cli exact-stats \
 
 ## OpenHands hook
 
-`tool_reuse/hook_query.py` 已使用 exact-v2。只有 `reusable=true` 才返回 deny 和缓存 observation；browser navigate、失败记录、过期记录和有副作用 curl 都返回 allow。
+`tool_reuse/hook_query.py` 已使用 exact-v5。只有同时设置 `TOOL_REUSE_DB` 与 `TOOL_REUSE_SCOPE` 且 `reusable=true` 才返回 deny、结构化 `toolResponse` 与 provenance；OpenHands SDK 会将其校验为 `execution_source=hook_replacement` 的 observation。普通 curl、browser 导航、失败记录、过期记录和有副作用搜索调用都返回 allow。
